@@ -124,7 +124,7 @@ begin
 				end if;
 			when STATE_SENDING =>
 				busy <= '1';
-				if reg_sentcnt = std_logic_vector(to_unsigned(10, reg_sentcnt'length)) then
+				if reg_sentcnt = std_logic_vector(to_unsigned(9, reg_sentcnt'length)) then
 					next_state <= STATE_IDLE;
 					next_sentcnt <= (others => '0');
 				else
