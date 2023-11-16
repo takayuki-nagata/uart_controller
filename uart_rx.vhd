@@ -6,6 +6,7 @@ use ieee.numeric_std.all;
 entity uart_rx is
 	generic(
 		DSIZE : integer := 8;
+		BITCNT_SIZE : integer := 4;
 		CNT : integer;
 		CSIZE : integer
 	);
@@ -45,16 +46,16 @@ architecture rtl of uart_rx is
 		);
 	end component;
 	constant const_idle_frame : std_logic_vector (DSIZE + 1 downto 0) := std_logic_vector(to_signed(-1, DSIZE +2));
-	type rx_state is (STATE_RST1, STATE_RST2, STATE_IDLE, STATE_WAITFORMIDBIT, STATE_RECEIVING);
+	type rx_state is (STATE_IDLE, STATE_WAITFORMIDBIT, STATE_RECEIVING);
 	signal state : rx_state;
 	signal next_state : rx_state;
 	signal reg_clkcnt : std_logic_vector(CSIZE - 1 downto 0);
 	signal next_clkcnt : std_logic_vector(CSIZE - 1 downto 0);
+	signal reg_bitcnt : std_logic_vector(BITCNT_SIZE - 1 downto 0);
+	signal next_bitcnt : std_logic_vector(BITCNT_SIZE - 1 downto 0);
 	signal ce_rst : std_logic;
 	signal sreg_ce : std_logic;
-	signal sreg_set : std_logic;
-	signal sreg_pin : std_logic_vector(DSIZE + 1 downto 0);
-	signal sreg_pout : std_logic_vector(DSIZE + 1 downto 0);
+	signal sreg_pout : std_logic_vector(DSIZE - 1 downto 0);
 begin
 	inst_uart_rx_clk_timer : clk_timer
 		generic map(
@@ -68,14 +69,14 @@ begin
 		);
 	inst_uart_rx_shift_registers: shift_registers
 		generic map(
-			SIZE => DSIZE + 2 -- DATA + stop/start bits
+			SIZE => DSIZE
 		)
 		port map(
 			clk => clk,
 			ce => sreg_ce,
-			set => sreg_set,
+			set => '0',
 			sin => rxd,
-			pin => sreg_pin,
+			pin => std_logic_vector(to_unsigned(0, DSIZE)),
 			pout => sreg_pout
 		);
 	process(clk)
@@ -83,38 +84,25 @@ begin
 		if rising_edge(clk) then
 			if rst = '1' then
 				reg_clkcnt <= (others => '0');
-				state <= STATE_RST1;
+				reg_bitcnt <= (others => '0');
+				state <= STATE_IDLE;
 			else
 				reg_clkcnt <= next_clkcnt;
+				reg_bitcnt <= next_bitcnt;
 				state <= next_state;
 			end if;
 		end if;
 	end process;
-	rx_state_machine : process(state, sreg_ce, rxd, reg_clkcnt, sreg_pout)
-		variable uartframe : std_logic_vector (DSIZE + 1 downto 0);
+	rx_state_machine : process(state, sreg_pout, sreg_ce, rxd, reg_clkcnt, reg_bitcnt)
 	begin
-		uartframe := sreg_pout;
-		sreg_pin <= uartframe;
-		sreg_set <= '0';
-		data <= uartframe(DSIZE downto 1);
+		data <= sreg_pout;
 		ce_rst <= '0';
 		next_clkcnt <= reg_clkcnt;
+		next_bitcnt <= reg_bitcnt;
 		rdy <= '0';
 		case state is
-			when STATE_RST1 =>
-				ce_rst <= '1';
-				next_state <= STATE_RST2;
-			when STATE_RST2 =>
-				if sreg_ce = '1' then
-					sreg_pin <= const_idle_frame;
-					sreg_set <= '1';
-					next_state <= STATE_IDLE;
-				else
-					next_state <= STATE_RST2;
-				end if;
 			when STATE_IDLE =>
-				if rxd = '1' then
-					ce_rst <= '1';
+				if rxd = '0' then -- detects start bit
 					next_clkcnt <= std_logic_vector(to_unsigned(CNT/2, next_clkcnt'length));
 					next_state <= STATE_WAITFORMIDBIT;
 				else
@@ -122,6 +110,8 @@ begin
 				end if;
 			when STATE_WAITFORMIDBIT =>
 				if reg_clkcnt = std_logic_vector(to_unsigned(0, reg_clkcnt'length)) then
+					ce_rst <= '1';
+					next_bitcnt <= (others => '0');
 					next_state <= STATE_RECEIVING;
 				else
 					next_clkcnt <= reg_clkcnt - 1;
@@ -130,23 +120,12 @@ begin
 			when STATE_RECEIVING =>
 				next_state <= STATE_RECEIVING;
 				if sreg_ce = '1' then
-					if uartframe(0) = '0' then -- start bit is arrived at the tail of the shift registers?
-						if uartframe(DSIZE + 1) = '1' then -- stop bit is arrived at the head of the shift registers.
-							sreg_pin <= rxd & const_idle_frame(DSIZE downto 0);
-							sreg_set <= '1';
-							rdy <= '1';
-							if rxd = '0' then -- receivd next frame
-								next_state <= STATE_RECEIVING;
-							else
-								next_state <= STATE_IDLE;
-							end if;
-						else -- corrupted signal?
-							sreg_pin <= const_idle_frame;
-							sreg_set <= '1';
-							rdy <= '0';
-							next_state <= STATE_IDLE;
-						end if;
-					end if; -- all uart frame has not recieved yet.
+					if reg_bitcnt = std_logic_vector(to_unsigned(8, reg_bitcnt'length)) then
+						rdy <= '1';
+						next_state <= STATE_IDLE;
+					else
+						next_bitcnt <= reg_bitcnt + 1;
+					end if;
 				end if;
 			when others =>
 				next_state <= STATE_IDLE;
